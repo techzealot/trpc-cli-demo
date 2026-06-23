@@ -1,0 +1,31 @@
+{
+  "name": "trpc-cli-demo",
+  "version": "1.0.0",
+  "description": "",
+  "type": "module",
+  "bin": {
+    "trpc-cli-demo": "./bin/trpc-cli-demo"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.18.2",
+  "devDependencies": {
+    "@types/json-schema": "^7.0.15",
+    "@types/node": "^26.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@bomb.sh/tab": "^0.0.17",
+    "@clack/prompts": "^1.6.0",
+    "@trpc/server": "^11.18.0",
+    "trpc-cli": "^0.15.1",
+    "zod": "^4.4.3"
+  }
+}
