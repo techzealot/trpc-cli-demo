@@ -4,7 +4,7 @@
 
 当前 trpc-cli 使用 [Omelette](https://github.com/f/omelette) 作为补全引擎，但该库已长期未更新。[@bomb.sh/tab](https://bomb.sh/tab) 是新一代的 JS CLI 补全框架，已被 Cloudflare、Nuxt、Vitest 等项目采用，支持 zsh/bash/fish/powershell。
 
-本文档设计 trpc-cli 的**声明式候选值机制**，通过 `meta.complete` 统一声明字段候选值，同时服务于 **Tab 补全** 和 **Prompts 交互** 两个消费端，与 Zod schema 验证职责分离。
+本文档设计 trpc-cli 的**声明式候选值机制**，通过 `meta.complete` 统一声明字段候选值，同时服务于 **Tab 补全**、**Prompts 交互** 和 **输入验证**。
 
 ## 现状分析
 
@@ -40,55 +40,31 @@ cli.run(params, program)
 
 1. **统一候选值**：`meta.complete` 声明的候选值同时服务于 Tab 补全和 Prompts 交互
 2. **Schema 驱动**：候选值在 Zod schema 上声明，符合 tRPC 的 schema-driven 理念
-3. **验证解耦**：`complete` 纯粹是 UX 声明，验证由 Zod schema 独立负责
+3. **统一机制**：`meta.complete` 映射到 `option.choices()`，Tab / Prompts / 验证 / 帮助文本四端免费
 4. **渐进式复杂度**：L0 自动 → L1 静态 → L2 描述 → L3 动态，按需选择
 5. **向后兼容**：新增字段均为可选，不影响现有行为
 6. **一行启用**：用户只需 `cli.run({ tab: true })`
 
-## 核心设计：职责分离
+## 核心设计：统一机制
 
-```
-Zod Schema      →  负责验证（值合不合法）
-meta.complete   →  负责 UX（有哪些建议值）
-```
-
-两个维度完全独立：
-
-```ts
-// 严格验证 + 有建议（只推荐常用值）
-z.enum(['dev', 'prod', 'staging']).meta({
-    complete: ['dev', 'prod']
-})
-
-// 宽松验证 + 有建议（建议值，但其他输入也合法）
-z.string().meta({
-    complete: ['dev', 'prod']
-})
-
-// 严格验证 + 无建议（L0 自动推导）
-z.enum(['a', 'b'])
-
-// 宽松验证 + 无建议（完全开放）
-z.string()
-```
-
-## 消费端架构
-
-候选值通过 Commander 的 `option.choices()` 统一分发：
+`meta.complete` 的值统一映射到 Commander 的 `option.choices()`，由 `argChoices` 驱动所有消费端：
 
 ```
 meta.complete / getEnumChoices
   ↓
 Commander option.choices([...])
-  ↓
-┌──────────────┬───────────────────────────┐
-│ 消费端       │ 行为                      │
-├──────────────┼───────────────────────────┤
-│ Tab 补全     │ 读取 argChoices → 候选值  │
-│ Prompts      │ 读取 argChoices → select  │
-│              │ 菜单 / checkbox 多选菜单  │
-└──────────────┴───────────────────────────┘
+  ↓ argChoices
+┌────────────────────┬──────────────────────────────────────┐
+│ 消费端             │ 行为                                 │
+├────────────────────┼──────────────────────────────────────┤
+│ Commander 验证     │ 拒绝不在 choices 中的输入            │
+│ Commander --help   │ 显示 (choices: "dev", "prod")        │
+│ Tab 补全           │ 读取 argChoices → 候选值             │
+│ Prompts            │ 读取 argChoices → select 菜单        │
+└────────────────────┴──────────────────────────────────────┘
 ```
+
+验证由 Commander 和 Zod **双重保障**，语义一致时不冲突。如果需要开放输入，直接使用 `z.string()` 不声明 `complete` 即可。
 
 ## 候选值层次
 
@@ -149,12 +125,12 @@ const router = t.router({
             // L0: enum 自动推导（已支持）
             env: z.enum(['dev', 'staging', 'prod']),
 
-            // L1: 静态建议（z.string() 验证宽松，complete 提供建议）
+            // L1: 静态候选（映射到 choices，约束 + 补全 + 提示）
             region: z.string().meta({
                 complete: ['us-east-1', 'us-west-2', 'ap-southeast-1']
             }),
 
-            // L2: 带描述的静态建议
+            // L2: 带描述的静态候选
             profile: z.string().meta({
                 complete: [
                     { value: 'default', description: '默认配置' },
@@ -184,13 +160,13 @@ const router = t.router({
 
 #### 静态与动态的处理差异
 
-| 层次 | choices 注册 | Tab | Prompts |
-|---|---|---|---|
-| L0 enum | `option.choices()` | argChoices 自动补全 | argChoices → select 菜单 |
-| L1/L2 静态 | `option.choices()` | argChoices 自动补全 | argChoices → select 菜单 |
-| L3 动态 | 不注册 | complete -- 时调用函数 | 缺失参数时调用函数渲染 select |
+| 层次 | choices 注册 | 验证 | Tab | Prompts |
+|---|---|---|---|---|
+| L0 enum | `option.choices()` | Commander + Zod 双重 | argChoices 自动补全 | argChoices → select |
+| L1/L2 静态 | `option.choices()` | Commander + Zod 双重 | argChoices 自动补全 | argChoices → select |
+| L3 动态 | 不注册 | 仅 Zod | complete -- 时调用函数 | 缺失参数时调用函数 |
 
-L3 不注册 `choices` 的原因：候选值是运行时动态生成的，无法在 schema 解析阶段确定。
+L0/L1/L2 统一走 `option.choices()`，Commander 验证和 Zod 验证语义一致，不冲突。L3 不注册 `choices` 的原因：候选值是运行时动态生成的，无法在 schema 解析阶段确定。
 
 #### Prompts 侧增强
 
@@ -237,14 +213,12 @@ declare module 'zod' {
     interface GlobalMeta {
         /**
          * 为该字段声明候选值。
-         * 同时服务于 Tab 补全和 Prompts 交互。
+         * 映射到 Commander option.choices()，同时服务于：
+         * Tab 补全 / Prompts 交互 / 输入验证 / --help 显示
          *
          * - string[]: 静态值列表（L1）
          * - CompleteItem[]: 带描述的列表（L2）
          * - CompleteFn: 同步/异步函数，运行时动态生成（L3）
-         *
-         * 注意：complete 是 UX 声明，不参与验证。
-         * 验证由 Zod schema 独立负责。
          */
         complete?: string[] | CompleteItem[] | CompleteFn
     }
